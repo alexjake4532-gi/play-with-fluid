@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Interactive Fluid & Glass</title>
+    
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✨</text></svg>" />
+    
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Load React, ReactDOM, and Babel to compile JSX -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            touch-action: none; 
+        }
+
+        @keyframes fadeOut {
+            0% { opacity: 1; transform: translateY(0); }
+            80% { opacity: 1; transform: translateY(0); }
+            100% { opacity: 0; transform: translateY(-10px); visibility: hidden; }
+        }
+
+        .fade-instruction {
+            animation: fadeOut 4s ease-in-out forwards;
+            pointer-events: none;
+        }
+
+        .tooltip {
+            visibility: hidden;
+            opacity: 0;
+            transition: opacity 0.2s, transform 0.2s;
+            transform: translateY(5px);
+        }
+        
+        .group:hover .tooltip {
+            visibility: visible;
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Smooth UI transitions */
+        .mode-transition {
+            transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+    </style>
+</head>
+<body>
+    <div id="root" class="w-full h-full"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const THEMES = [
+            { id: 'peach', name: 'Peach', bgMain: '#E0C5B0', primary: '#C88D7B' },
+            { id: 'ocean', name: 'Ocean', bgMain: '#1A2A3A', primary: '#4A7C8C' },
+            { id: 'berry', name: 'Berry', bgMain: '#3A1E30', primary: '#8A4A63' },
+            { id: 'forest', name: 'Forest', bgMain: '#1C2E24', primary: '#4D7858' },
+            { id: 'midnight', name: 'Midnight', bgMain: '#16161A', primary: '#4F4F6A' },
+            { id: 'gold', name: 'Liquid Gold', bgMain: '#3D311F', primary: '#A68449' }
+        ];
+
+        const InteractiveFluid = ({ theme }) => {
+            const canvasRef = useRef(null);
+
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                const gl = canvas.getContext('webgl');
+                if (!gl) return;
+
+                let targetMouse = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+                let currentMouse = { ...targetMouse };
+                let isInteracting = false;
+
+                const updateMousePosition = (clientX, clientY) => {
+                    targetMouse.x = clientX * window.devicePixelRatio;
+                    targetMouse.y = (window.innerHeight - clientY) * window.devicePixelRatio;
+                    isInteracting = true;
+                };
+
+                const handleMouseMove = (e) => updateMousePosition(e.clientX, e.clientY);
+                const handleTouchMove = (e) => {
+                    if (e.touches.length > 0) updateMousePosition(e.touches[0].clientX, e.touches[0].clientY);
+                };
+
+                const handleInteractionEnd = () => {
+                    isInteracting = false;
+                    targetMouse.x = (window.innerWidth / 2) * window.devicePixelRatio;
+                    targetMouse.y = (window.innerHeight / 2) * window.devicePixelRatio;
+                };
+
+                window.addEventListener('mousemove', handleMouseMove);
+                window.addEventListener('touchmove', handleTouchMove, { passive: false });
+                window.addEventListener('mouseleave', handleInteractionEnd);
+                window.addEventListener('touchend', handleInteractionEnd);
+
+                const resize = () => {
+                    canvas.width = window.innerWidth * window.devicePixelRatio;
+                    canvas.height = window.innerHeight * window.devicePixelRatio;
+                    gl.viewport(0, 0, canvas.width, canvas.height);
+                    if (!isInteracting) {
+                        targetMouse = { x: canvas.width / 2, y: canvas.height / 2 };
+                        currentMouse = { ...targetMouse };
+                    }
+                };
+                window.addEventListener('resize', resize);
+                resize();
+
+                const vsSource = `attribute vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }`;
+                
+                const fsSource = `
+                    precision highp float;
+                    uniform vec2 u_resolution;
+                    uniform float u_time;
+                    uniform vec2 u_mouse;
+                    uniform vec3 u_baseColor;
+                    uniform vec3 u_waveColor;
+
+                    float hash(float n) { return fract(sin(n) * 1e4); }
+                    float hash(vec2 p) { return fract(1e4 * sin(17.0 * p.x + p.y * 0.1) * (0.1 + abs(sin(p.y * 13.0 + p.x)))); }
+
+                    float noise(vec2 x) {
+                        vec2 i = floor(x);
+                        vec2 f = fract(x);
+                        float a = hash(i);
+                        float b = hash(i + vec2(1.0, 0.0));
+                        float c = hash(i + vec2(0.0, 1.0));
+                        float d = hash(i + vec2(1.0, 1.0));
+                        vec2 u = f * f * (3.0 - 2.0 * f);
+                        return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+                    }
+
+                    float fbm(vec2 p) {
+                        float v = 0.0;
+                        float a = 0.5;
+                        mat2 rot = mat2(cos(0.5), sin(0.5), -sin(0.5), cos(0.5));
+                        for (int i = 0; i < 6; ++i) {
+                            v += a * noise(p);
+                            p = rot * p * 2.0;
+                            a *= 0.5;
+                        }
+                        return v;
+                    }
+
+                    void main() {
+                        vec2 uv = gl_FragCoord.xy / u_resolution.xy;
+                        vec2 p = uv * 2.0 - 1.0;
+                        p.x *= u_resolution.x / u_resolution.y;
+
+                        vec2 m = u_mouse / u_resolution.xy * 2.0 - 1.0;
+                        m.x *= u_resolution.x / u_resolution.y;
+
+                        float t = u_time * 0.12; 
+
+                        // Mouse interaction physics
+                        float mouseDist = length(p - m);
+                        float push = exp(-mouseDist * 15.0) * 0.7; 
+                        vec2 p_distorted = p - normalize(p - m + 0.0001) * push;
+
+                        vec2 d1 = vec2(fbm(p_distorted * 1.5 + t * 0.5), fbm(p_distorted * 1.2 - t * 0.4));
+                        vec2 d2 = vec2(fbm(p_distorted * 2.0 + d1 * 1.2 + t * 0.6), fbm(p_distorted * 2.2 + d1 * 1.5 - t * 0.5));
+                        float surface = fbm(p_distorted * 1.5 + d2 * 1.5);
+
+                        float eps = 0.015;
+                        float nx = fbm((p_distorted + vec2(eps, 0.0)) * 1.5 + d2 * 1.5) - surface;
+                        float ny = fbm((p_distorted + vec2(0.0, eps)) * 1.5 + d2 * 1.5) - surface;
+                        nx -= (p.x - m.x) * push * 4.0;
+                        ny -= (p.y - m.y) * push * 4.0;
+                        vec3 normal = normalize(vec3(nx, ny, 0.04)); 
+
+                        vec3 lightDir = normalize(vec3(-0.8, 1.2, 0.8));
+                        vec3 viewDir = vec3(0.0, 0.0, 1.0);
+                        vec3 halfDir = normalize(lightDir + viewDir);
+                        
+                        float diffuse = max(dot(normal, lightDir), 0.0);
+                        float specular = pow(max(dot(normal, halfDir), 0.0), 20.0); 
+                        float rim = 1.0 - max(dot(normal, viewDir), 0.0);
+                        rim = smoothstep(0.7, 1.0, rim);
+
+                        vec3 mouseLightDir = normalize(vec3(m.x - p.x, m.y - p.y, 0.5));
+                        float mouseSpecular = pow(max(dot(normal, normalize(mouseLightDir + viewDir)), 0.0), 12.0);
+
+                        // Tightened mix for solid, dense look
+                        vec3 color = mix(u_baseColor, u_waveColor, smoothstep(0.4, 0.6, surface + diffuse * 0.3));
+                        
+                        // Extremely subtle chromatic aberration for non-glassy look
+                        color += vec3(normal.x * 0.01, normal.y * 0.01, -normal.x * 0.01) * 0.05;
+                        
+                        // Softened highlights
+                        color += vec3(1.0, 1.0, 1.0) * specular * 0.15; 
+                        color += u_waveColor * rim * 0.1; 
+                        color += u_waveColor * mouseSpecular * push * 1.0; 
+
+                        gl_FragColor = vec4(color, 1.0);
+                    }
+                `;
+
+                const compileShader = (type, source) => {
+                    const shader = gl.createShader(type);
+                    gl.shaderSource(shader, source);
+                    gl.compileShader(shader);
+                    return shader;
+                };
+
+                const program = gl.createProgram();
+                gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vsSource));
+                gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fsSource));
+                gl.linkProgram(program);
+                gl.useProgram(program);
+
+                const buffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+
+                const posLocation = gl.getAttribLocation(program, "position");
+                gl.enableVertexAttribArray(posLocation);
+                gl.vertexAttribPointer(posLocation, 2, gl.FLOAT, false, 0, 0);
+
+                const uniforms = {
+                    uTime: gl.getUniformLocation(program, "u_time"),
+                    uRes: gl.getUniformLocation(program, "u_resolution"),
+                    uMouse: gl.getUniformLocation(program, "u_mouse"),
+                    uBaseColor: gl.getUniformLocation(program, "u_baseColor"),
+                    uWaveColor: gl.getUniformLocation(program, "u_waveColor")
+                };
+
+                const hexToVec3 = (hex) => {
+                    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+                    return result ? [parseInt(result[1], 16) / 255, parseInt(result[2], 16) / 255, parseInt(result[3], 16) / 255] : [0, 0, 0];
+                };
+
+                let animationId;
+                let startTime = performance.now();
+
+                const render = (now) => {
+                    currentMouse.x += (targetMouse.x - currentMouse.x) * 0.08;
+                    currentMouse.y += (targetMouse.y - currentMouse.y) * 0.08;
+
+                    gl.uniform1f(uniforms.uTime, (now - startTime) * 0.001);
+                    gl.uniform2f(uniforms.uRes, canvas.width, canvas.height);
+                    gl.uniform2f(uniforms.uMouse, currentMouse.x, currentMouse.y);
+                    
+                    const bgVec = hexToVec3(theme.bgMain);
+                    // Brighter base to reduce the "deep abyss" look
+                    gl.uniform3fv(uniforms.uBaseColor, [bgVec[0] * 1.1, bgVec[1] * 1.1, bgVec[2] * 1.1]);
+                    gl.uniform3fv(uniforms.uWaveColor, hexToVec3(theme.primary));
+
+                    gl.drawArrays(gl.TRIANGLES, 0, 6);
+                    animationId = requestAnimationFrame(render);
+                };
+                render(performance.now());
+
+                return () => {
+                    window.removeEventListener('resize', resize);
+                    window.removeEventListener('mousemove', handleMouseMove);
+                    window.removeEventListener('touchmove', handleTouchMove);
+                    window.removeEventListener('mouseleave', handleInteractionEnd);
+                    window.removeEventListener('touchend', handleInteractionEnd);
+                    cancelAnimationFrame(animationId);
+                };
+            }, [theme.bgMain, theme.primary]);
+
+            return <canvas ref={canvasRef} className="fixed inset-0 pointer-events-auto block" style={{ zIndex: 0, width: '100vw', height: '100vh' }} />;
+        };
+
+        const LiquidGlass = ({ bgImage }) => {
+            const canvasRef = useRef(null);
+            const glRef = useRef(null);
+            const textureRef = useRef(null);
+            const imageInfoRef = useRef({ hasImage: false, width: 1, height: 1 });
+
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                const gl = canvas.getContext('webgl');
+                if (!gl) return;
+                
+                glRef.current = gl;
+
+                // Set up the texture object once
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+                textureRef.current = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, textureRef.current);
+                // Default transparent 1x1 pixel
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+
+                let targetMouse = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+                let currentMouse = { ...targetMouse };
+
+                const updateMousePosition = (clientX, clientY) => {
+                    targetMouse.x = clientX * window.devicePixelRatio;
+                    targetMouse.y = (window.innerHeight - clientY) * window.devicePixelRatio;
+                };
+
+                const handleMouseMove = (e) => updateMousePosition(e.clientX, e.clientY);
+                const handleTouchMove = (e) => {
+                    if (e.touches.length > 0) updateMousePosition(e.touches[0].clientX, e.touches[0].clientY);
+                };
+
+                window.addEventListener('mousemove', handleMouseMove);
+                window.addEventListener('touchmove', handleTouchMove, { passive: false });
+
+                const resize = () => {
+                    canvas.width = window.innerWidth * window.devicePixelRatio;
+                    canvas.height = window.innerHeight * window.devicePixelRatio;
+                    gl.viewport(0, 0, canvas.width, canvas.height);
+                };
+                window.addEventListener('resize', resize);
+                resize();
+
+                const vsSource = `attribute vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }`;
+                
+                const fsSource = `
+                    precision highp float;
+                    uniform vec2 u_resolution;
+                    uniform float u_time;
+                    uniform vec2 u_mouse;
+                    
+                    uniform sampler2D u_image;
+                    uniform float u_hasImage;
+                    uniform vec2 u_imageResolution;
+
+                    float hash(float n) { return fract(sin(n) * 1e4); }
+                    float hash(vec2 p) { return fract(1e4 * sin(17.0 * p.x + p.y * 0.1) * (0.1 + abs(sin(p.y * 13.0 + p.x)))); }
+
+                    float noise(vec2 x) {
+                        vec2 i = floor(x);
+                        vec2 f = fract(x);
+                        float a = hash(i); float b = hash(i + vec2(1.0, 0.0));
+                        float c = hash(i + vec2(0.0, 1.0)); float d = hash(i + vec2(1.0, 1.0));
+                        vec2 u = f * f * (3.0 - 2.0 * f);
+                        return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+                    }
+
+                    vec3 getProceduralBackground(vec2 uv) {
+                        vec3 col1 = vec3(0.98, 0.98, 0.99); 
+                        vec3 col2 = vec3(0.88, 0.92, 0.97); 
+                        vec3 col3 = vec3(0.94, 0.90, 0.96); 
+                        vec3 col4 = vec3(0.85, 0.95, 0.95); 
+
+                        float t = u_time * 0.1;
+                        float n1 = sin(uv.x * 2.0 + t) * cos(uv.y * 2.0 - t * 0.8);
+                        float n2 = cos(uv.x * 1.5 - t * 1.2) * sin(uv.y * 1.5 + t);
+                        
+                        vec3 bg = mix(col1, col2, smoothstep(-1.0, 1.0, n1));
+                        bg = mix(bg, col3, smoothstep(-1.0, 1.0, n2));
+                        
+                        float glow = sin(uv.x * 3.0 + uv.y * 2.0 + t * 2.0) * 0.5 + 0.5;
+                        bg = mix(bg, col4, glow * 0.3);
+                        
+                        return bg;
+                    }
+                    
+                    // Mimics CSS object-fit: cover to prevent image stretching
+                    vec2 getCoverUV(vec2 uv) {
+                        vec2 st = uv;
+                        float canvasAspect = u_resolution.x / u_resolution.y;
+                        float imgAspect = u_imageResolution.x / u_imageResolution.y;
+
+                        if (canvasAspect > imgAspect) {
+                            float scale = imgAspect / canvasAspect;
+                            st.y = (st.y - 0.5) * scale + 0.5;
+                        } else {
+                            float scale = canvasAspect / imgAspect;
+                            st.x = (st.x - 0.5) * scale + 0.5;
+                        }
+                        return st;
+                    }
+
+                    float getGlassHeight(vec2 p, float t) {
+                        float v = 0.0;
+                        float a = 0.6;
+                        vec2 shift = vec2(100.0);
+                        mat2 rot = mat2(cos(0.5), sin(0.5), -sin(0.5), cos(0.5));
+                        
+                        for (int i = 0; i < 4; ++i) {
+                            p += vec2(sin(p.y * 1.2 + t * 0.4), cos(p.x * 1.1 - t * 0.3)) * 0.4;
+                            v += a * noise(p);
+                            p = rot * p * 2.0 + shift;
+                            a *= 0.4;
+                        }
+                        
+                        v += sin(p.x * 0.5 + t * 0.2) * cos(p.y * 0.5 - t * 0.1) * 0.5;
+                        return v;
+                    }
+
+                    void main() {
+                        vec2 uv = gl_FragCoord.xy / u_resolution.xy;
+                        vec2 p = uv * 2.0 - 1.0;
+                        p.x *= u_resolution.x / u_resolution.y;
+
+                        vec2 m = u_mouse / u_resolution.xy * 2.0 - 1.0;
+                        m.x *= u_resolution.x / u_resolution.y;
+
+                        float t = u_time * 0.15; 
+
+                        float mouseDist = length(p - m);
+                        float push = exp(-mouseDist * 8.0) * 0.15; 
+                        p -= normalize(p - m + 0.0001) * push;
+
+                        float eps = 0.01;
+                        float h = getGlassHeight(p * 1.2, t);
+                        float hx = getGlassHeight(p * 1.2 + vec2(eps, 0.0), t);
+                        float hy = getGlassHeight(p * 1.2 + vec2(0.0, eps), t);
+                        vec3 normal = normalize(vec3(hx - h, hy - h, 0.12)); 
+
+                        vec3 viewDir = normalize(vec3(0.0, 0.0, 1.0));
+                        vec3 lightDir1 = normalize(vec3(0.8, 1.0, 0.8));
+                        vec3 lightDir2 = normalize(vec3(-0.8, -0.5, 0.5));
+                        
+                        vec3 halfDir1 = normalize(lightDir1 + viewDir);
+                        vec3 halfDir2 = normalize(lightDir2 + viewDir);
+
+                        float spec1 = pow(max(dot(normal, halfDir1), 0.0), 80.0); 
+                        float spec2 = pow(max(dot(normal, halfDir2), 0.0), 30.0); 
+                        float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.5);
+
+                        float refractionAmount = 0.08;
+                        
+                        vec2 uvR = uv + normal.xy * refractionAmount * 1.0;
+                        vec2 uvG = uv + normal.xy * refractionAmount * 1.05;
+                        vec2 uvB = uv + normal.xy * refractionAmount * 1.1;
+                        
+                        vec3 bgR, bgG, bgB, baseBg;
+                        
+                        // Sample from the uploaded image if it exists, otherwise use procedural background
+                        if (u_hasImage > 0.5) {
+                            bgR = texture2D(u_image, getCoverUV(uvR)).rgb;
+                            bgG = texture2D(u_image, getCoverUV(uvG)).rgb;
+                            bgB = texture2D(u_image, getCoverUV(uvB)).rgb;
+                            baseBg = texture2D(u_image, getCoverUV(uv)).rgb;
+                        } else {
+                            bgR = getProceduralBackground(uvR);
+                            bgG = getProceduralBackground(uvG);
+                            bgB = getProceduralBackground(uvB);
+                            baseBg = getProceduralBackground(uv);
+                        }
+                        
+                        vec3 glassColor = vec3(bgR.r, bgG.g, bgB.b);
+
+                        float frost = smoothstep(-0.5, 1.5, h);
+                        vec3 finalColor = mix(glassColor, baseBg, frost * 0.3);
+
+                        finalColor += vec3(1.0) * spec1 * 1.2;     
+                        finalColor += vec3(0.95, 0.98, 1.0) * spec2 * 0.4; 
+                        finalColor += vec3(1.0) * fresnel * 0.3;   
+
+                        gl_FragColor = vec4(finalColor, 1.0);
+                    }
+                `;
+
+                const compileShader = (type, source) => {
+                    const shader = gl.createShader(type);
+                    gl.shaderSource(shader, source);
+                    gl.compileShader(shader);
+                    return shader;
+                };
+
+                const program = gl.createProgram();
+                gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vsSource));
+                gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fsSource));
+                gl.linkProgram(program);
+                gl.useProgram(program);
+
+                const buffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+
+                const posLocation = gl.getAttribLocation(program, "position");
+                gl.enableVertexAttribArray(posLocation);
+                gl.vertexAttribPointer(posLocation, 2, gl.FLOAT, false, 0, 0);
+
+                const uniforms = {
+                    uTime: gl.getUniformLocation(program, "u_time"),
+                    uRes: gl.getUniformLocation(program, "u_resolution"),
+                    uMouse: gl.getUniformLocation(program, "u_mouse"),
+                    uImage: gl.getUniformLocation(program, "u_image"),
+                    uHasImage: gl.getUniformLocation(program, "u_hasImage"),
+                    uImageRes: gl.getUniformLocation(program, "u_imageResolution")
+                };
+
+                let animationId;
+                let startTime = performance.now();
+
+                const render = (now) => {
+                    currentMouse.x += (targetMouse.x - currentMouse.x) * 0.04;
+                    currentMouse.y += (targetMouse.y - currentMouse.y) * 0.04;
+
+                    gl.uniform1f(uniforms.uTime, (now - startTime) * 0.001);
+                    gl.uniform2f(uniforms.uRes, canvas.width, canvas.height);
+                    gl.uniform2f(uniforms.uMouse, currentMouse.x, currentMouse.y);
+                    
+                    // Bind the image texture
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_2D, textureRef.current);
+                    gl.uniform1i(uniforms.uImage, 0);
+                    gl.uniform1f(uniforms.uHasImage, imageInfoRef.current.hasImage ? 1.0 : 0.0);
+                    gl.uniform2f(uniforms.uImageRes, imageInfoRef.current.width, imageInfoRef.current.height);
+                    
+                    gl.drawArrays(gl.TRIANGLES, 0, 6);
+                    animationId = requestAnimationFrame(render);
+                };
+                render(performance.now());
+
+                return () => {
+                    window.removeEventListener('resize', resize);
+                    window.removeEventListener('mousemove', handleMouseMove);
+                    window.removeEventListener('touchmove', handleTouchMove);
+                    cancelAnimationFrame(animationId);
+                };
+            }, []);
+
+            // Handle uploading and parsing the texture dynamically
+            useEffect(() => {
+                if (!glRef.current) return;
+                const gl = glRef.current;
+                
+                if (!bgImage) {
+                    imageInfoRef.current = { hasImage: false, width: 1, height: 1 };
+                    return;
+                }
+
+                const img = new Image();
+                img.onload = () => {
+                    gl.bindTexture(gl.TEXTURE_2D, textureRef.current);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                    
+                    imageInfoRef.current = { hasImage: true, width: img.width, height: img.height };
+                };
+                img.src = bgImage;
+            }, [bgImage]);
+
+            return <canvas ref={canvasRef} className="fixed inset-0 pointer-events-auto block" style={{ zIndex: 0, width: '100vw', height: '100vh' }} />;
+        };
+
+        const App = () => {
+            const [mode, setMode] = useState('glass');
+            const [activeThemeIndex, setActiveThemeIndex] = useState(1); 
+            const [bgImage, setBgImage] = useState(null);
+            const activeTheme = THEMES[activeThemeIndex];
+
+            const handleImageUpload = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (event) => setBgImage(event.target.result);
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            return (
+                <div className="relative w-full h-full select-none overflow-hidden">
+                    
+                    {/* Render active WebGL background */}
+                    <div className="absolute inset-0 transition-opacity duration-1000 ease-in-out">
+                        {mode === 'glass' ? (
+                            <LiquidGlass bgImage={bgImage} />
+                        ) : (
+                            <InteractiveFluid theme={activeTheme} />
+                        )}
+                    </div>
+
+                    {/* Intro Instruction */}
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10 fade-instruction">
+                        <h1 className={`text-2xl md:text-4xl font-light tracking-[0.2em] mix-blend-overlay text-center px-4 ${mode === 'glass' && !bgImage ? 'text-black/40' : 'text-white/70'}`}>
+                            TOUCH & DRAG
+                        </h1>
+                    </div>
+
+                    {/* UI Overlay Container */}
+                    <div className="absolute inset-0 z-20 pointer-events-none flex flex-col justify-between items-center p-8">
+                        
+                        {/* Top Mode Switcher */}
+                        <div className="pointer-events-auto flex p-1.5 rounded-full bg-white/10 backdrop-blur-md border border-white/20 shadow-xl transition-all">
+                            <button
+                                onClick={() => setMode('paint')}
+                                className={`px-6 py-2.5 rounded-full text-sm font-semibold tracking-wide transition-all duration-300 ${
+                                    mode === 'paint' 
+                                        ? 'bg-white text-black shadow-md' 
+                                        : 'text-white/70 hover:text-white hover:bg-white/10'
+                                }`}
+                            >
+                                Fluid Paint
+                            </button>
+                            <button
+                                onClick={() => setMode('glass')}
+                                className={`px-6 py-2.5 rounded-full text-sm font-semibold tracking-wide transition-all duration-300 ${
+                                    mode === 'glass' 
+                                        ? 'bg-white text-black shadow-md' 
+                                        : 'text-white/70 hover:text-white hover:bg-white/10'
+                                }`}
+                            >
+                                Liquid Glass
+                            </button>
+                        </div>
+
+                        {/* Bottom Dynamic Controls Container */}
+                        <div className="relative flex justify-center items-center h-16 w-full">
+                            
+                            {/* Paint Mode: Theme Selector */}
+                            <div className={`absolute pointer-events-auto flex gap-4 p-4 rounded-full bg-black/20 backdrop-blur-md border border-white/10 shadow-2xl transition-all duration-500 hover:bg-black/40 ${mode === 'glass' ? 'opacity-0 translate-y-8 pointer-events-none' : 'opacity-100 translate-y-0'}`}>
+                                {THEMES.map((theme, index) => {
+                                    const isActive = index === activeThemeIndex;
+                                    return (
+                                        <button
+                                            key={theme.id}
+                                            onClick={() => setActiveThemeIndex(index)}
+                                            className="group relative flex items-center justify-center focus:outline-none transition-transform hover:scale-125 active:scale-95"
+                                        >
+                                            <div 
+                                                className={`w-6 h-6 rounded-full transition-all duration-300 shadow-lg ${isActive ? 'scale-110 ring-2 ring-white ring-offset-2 ring-offset-black/20' : 'opacity-70 hover:opacity-100'}`}
+                                                style={{ backgroundColor: theme.primary }}
+                                            ></div>
+                                            <div className="tooltip absolute -top-10 px-3 py-1 bg-black/80 text-white text-xs rounded-md whitespace-nowrap backdrop-blur-sm border border-white/10 pointer-events-none">
+                                                {theme.name}
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Glass Mode: Image Upload Controls */}
+                            <div className={`absolute pointer-events-auto flex gap-3 p-2 rounded-full bg-black/20 backdrop-blur-md border border-white/10 shadow-2xl transition-all duration-500 hover:bg-black/40 ${mode === 'paint' ? 'opacity-0 translate-y-8 pointer-events-none' : 'opacity-100 translate-y-0'}`}>
+                                <label className="cursor-pointer px-5 py-2.5 bg-white/10 hover:bg-white/20 rounded-full text-white text-sm font-semibold transition-colors flex items-center gap-2 shadow-inner">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                    Upload Background
+                                    <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                                </label>
+                                {bgImage && (
+                                    <button onClick={() => setBgImage(null)} className="px-5 py-2.5 bg-red-500/40 hover:bg-red-500/70 rounded-full text-white text-sm font-semibold transition-colors shadow-inner">
+                                        Clear
+                                    </button>
+                                )}
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
